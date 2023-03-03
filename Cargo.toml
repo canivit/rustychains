@@ -1,0 +1,13 @@
+[package]
+name = "rustychains"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+futures = "0.3.26"
+shiplift = "0.7"
+thiserror = "1.0.38"
+anyhow = "1.0.69"

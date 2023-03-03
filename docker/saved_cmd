@@ -1,0 +1,1 @@
+docker run -v /home/can/workspace/rustychains/docker/code/:/home/code -w /home/code sandbox python hello.py
