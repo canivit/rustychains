@@ -19,13 +19,13 @@ pub enum Language {
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("path '{0}' does not point to an existing directory")]
+    #[error("path {0:?} does not point to an existing directory")]
     InvalidDirectory(PathBuf),
 
-    #[error("directory '{0}' does not contain a dockerfile named 'Dockerfile'")]
+    #[error("directory {0:?} does not contain a dockerfile named 'Dockerfile'")]
     MissingDockerfile(PathBuf),
 
-    #[error("failed to retrieve the absolute path of directory '{directory:?}'")]
+    #[error("failed to retrieve the absolute path of directory {directory:?}")]
     FailedToRetrieveAbsolutePath {
         directory: PathBuf,
 
@@ -33,7 +33,7 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("failed to create directory at '{directory:?}'")]
+    #[error("failed to create directory at {directory:?}")]
     FailedToCreateDirectory {
         directory: PathBuf,
 
@@ -41,7 +41,7 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("failed to remove directory at '{directory:?}'")]
+    #[error("failed to remove directory at {directory:?}")]
     FailedToRemoveDirectory {
         directory: PathBuf,
 
@@ -49,10 +49,10 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("path '{0}' does not point to an existing file")]
+    #[error("path {0:?} does not point to an existing file")]
     InvalidCodeFile(PathBuf),
 
-    #[error("failed to copy the code file at '{src:?}' to '{dest:?}'")]
+    #[error("failed to copy the code file at {src:?} to {dest:?}")]
     FailedToCopyCodeFile {
         src: PathBuf,
         dest: PathBuf,
@@ -64,7 +64,7 @@ pub enum Error {
     #[error("failed to build docker image")]
     FailedToBuildImage(#[source] shiplift::Error),
 
-    #[error("failed to create docker container from image with tag '{image_tag:?}'")]
+    #[error("failed to create docker container from image with tag {image_tag:?}")]
     FailedToCreateContainer {
         image_tag: String,
 
@@ -88,7 +88,7 @@ pub enum Error {
         source: shiplift::Error,
     },
 
-    #[error("failed to execute '{cmd:?}' inside docker container")]
+    #[error("failed to execute {cmd:?} inside docker container")]
     FailedToExecute {
         cmd: String,
 
