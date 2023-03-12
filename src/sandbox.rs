@@ -4,11 +4,11 @@ use shiplift::{BuildOptions, Container, ContainerOptions, Docker, RmContainerOpt
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
 use std::{fs, vec};
+use tempdir::TempDir;
 use thiserror::Error;
 
 pub struct DockerSandbox {
     docker: Docker,
-    docker_dir: PathBuf,
     image_tag: String,
 }
 
@@ -34,21 +34,8 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("failed to create directory at {directory:?}")]
-    FailedToCreateDirectory {
-        directory: PathBuf,
-
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to remove directory at {directory:?}")]
-    FailedToRemoveDirectory {
-        directory: PathBuf,
-
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("failed to create temp directory")]
+    FailedToCreateTempDirectory(#[source] std::io::Error),
 
     #[error("path {0:?} does not point to an existing file")]
     InvalidCodeFile(PathBuf),
@@ -133,7 +120,6 @@ impl DockerSandbox {
         build_image(&docker, &absolute_path, image_tag).await?;
         Ok(DockerSandbox {
             docker,
-            docker_dir: absolute_path,
             image_tag: image_tag.to_owned(),
         })
     }
@@ -142,15 +128,14 @@ impl DockerSandbox {
     where
         T: AsRef<Path>,
     {
-        let sandbox_dir = get_sandbox_dir(&self.docker_dir);
-        create_sandbox_dir(&sandbox_dir)?;
-        let sandbox_files = get_sandbox_files(code_file.as_ref(), lang, &sandbox_dir)?;
+        let temp_dir = TempDir::new("").map_err(Error::FailedToCreateTempDirectory)?;
+        let sandbox_files = get_sandbox_files(code_file.as_ref(), lang, temp_dir.as_ref())?;
         let commands = get_commands(&sandbox_files, lang);
         copy_code_file(code_file.as_ref(), &sandbox_files.host_src)?;
         if !&commands.build_cmd.is_empty() {
             exec_container(
                 &self.docker,
-                &sandbox_dir,
+                temp_dir.as_ref(),
                 &self.image_tag,
                 &commands.build_cmd,
             )
@@ -158,24 +143,16 @@ impl DockerSandbox {
         }
         let output = exec_container(
             &self.docker,
-            &sandbox_dir,
+            temp_dir.as_ref(),
             &self.image_tag,
             &commands.run_cmd,
         )
         .await?;
-        clean_sandbox_dir(&sandbox_dir)?;
         Ok(output)
     }
 }
 
 fn validate_directory(dir: &Path) -> Result<PathBuf, Error> {
-    let exist = dir
-        .try_exists()
-        .map_err(|_err| Error::InvalidDirectory(dir.to_path_buf()))?;
-    if !exist || !dir.is_dir() {
-        return Err(Error::InvalidDirectory(dir.to_path_buf()));
-    }
-
     let docker_file = dir.join("Dockerfile");
     let exist = docker_file
         .try_exists()
@@ -204,11 +181,11 @@ async fn build_image(docker: &Docker, path: &Path, tag: &str) -> Result<(), Erro
 
 async fn exec_container(
     docker: &Docker,
-    sandbox_dir: &Path,
+    temp_dir: &Path,
     image_tag: &str,
     cmd: &[String],
 ) -> Result<RunOutput, Error> {
-    let container_id = create_container(docker, sandbox_dir, image_tag, cmd).await?;
+    let container_id = create_container(docker, temp_dir, image_tag, cmd).await?;
     let container = docker.containers().get(&container_id);
 
     let (mut read, _write) = container
@@ -258,11 +235,11 @@ async fn exec_container(
 
 async fn create_container(
     docker: &Docker,
-    sandbox_dir: &Path,
+    temp_dir: &Path,
     image_tag: &str,
     cmd: &[String],
 ) -> Result<String, Error> {
-    let mount = format!("{}:/home/sandbox", sandbox_dir.display());
+    let mount = format!("{}:/home/sandbox", temp_dir.display());
     let slice_cmd: Vec<&str> = cmd.iter().map(String::as_str).collect();
     let options = ContainerOptions::builder(image_tag)
         .volumes(vec![&mount])
@@ -306,10 +283,6 @@ struct SandboxFiles {
     container_bin: PathBuf,
 }
 
-fn get_sandbox_dir(docker_dir: &Path) -> PathBuf {
-    docker_dir.join("sandbox")
-}
-
 fn get_source_extension(lang: Language) -> &'static str {
     match lang {
         Language::Python => "py",
@@ -338,20 +311,6 @@ fn get_runner(lang: Language) -> &'static str {
     }
 }
 
-fn create_sandbox_dir(sandbox_dir: &Path) -> Result<(), Error> {
-    fs::create_dir(sandbox_dir).map_err(|err| Error::FailedToCreateDirectory {
-        directory: sandbox_dir.to_path_buf(),
-        source: err,
-    })
-}
-
-fn clean_sandbox_dir(sandbox_dir: &Path) -> Result<(), Error> {
-    fs::remove_dir_all(sandbox_dir).map_err(|err| Error::FailedToRemoveDirectory {
-        directory: sandbox_dir.to_path_buf(),
-        source: err,
-    })
-}
-
 fn copy_code_file(src: &Path, dest: &Path) -> Result<(), Error> {
     fs::copy(src, dest).map_err(|err| Error::FailedToCopyCodeFile {
         src: src.to_path_buf(),
@@ -364,7 +323,7 @@ fn copy_code_file(src: &Path, dest: &Path) -> Result<(), Error> {
 fn get_sandbox_files(
     code_file: &Path,
     lang: Language,
-    sandbox_dir: &Path,
+    temp_dir: &Path,
 ) -> Result<SandboxFiles, Error> {
     let base_file_name: PathBuf = code_file
         .file_stem()
@@ -372,7 +331,7 @@ fn get_sandbox_files(
         .into();
     let source_ext = get_source_extension(lang);
     let compiled_ext = get_compiled_extension(lang);
-    let host_src = sandbox_dir.join(&base_file_name).with_extension(source_ext);
+    let host_src = temp_dir.join(&base_file_name).with_extension(source_ext);
     let container_src = base_file_name.with_extension(source_ext);
     let container_bin = base_file_name.with_extension(compiled_ext);
     Ok(SandboxFiles {
