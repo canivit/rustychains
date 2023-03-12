@@ -1,7 +1,9 @@
 use futures::StreamExt;
-use shiplift::{BuildOptions, ContainerOptions, Docker, ExecContainerOptions};
-use std::fs;
+use shiplift::tty::TtyChunk::{StdErr, StdIn, StdOut};
+use shiplift::{BuildOptions, ContainerOptions, Docker};
 use std::path::{Path, PathBuf};
+use std::str::from_utf8;
+use std::{fs, vec};
 use thiserror::Error;
 
 pub struct DockerSandbox {
@@ -42,6 +44,22 @@ pub enum Error {
         source: shiplift::Error,
     },
 
+    #[error("failed to attach to docker container with id {container_id:?}")]
+    FailedToAtachToContainer {
+        container_id: String,
+
+        #[source]
+        source: shiplift::Error,
+    },
+
+    #[error("failed to start docker container with id {container_id:?}")]
+    FailedToStartContainer {
+        container_id: String,
+
+        #[source]
+        source: shiplift::Error,
+    },
+
     #[error("failed to create directory at '{directory:?}'")]
     FailedToCreateDirectory {
         directory: PathBuf,
@@ -69,6 +87,26 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("failed to execute '{cmd:?}' inside docker container")]
+    FailedToExecute {
+        cmd: String,
+
+        #[source]
+        source: shiplift::Error,
+    },
+
+    #[error("docker container outputted non utf-8 bytes to stdout")]
+    InvalidBytesStdOut {
+        #[source]
+        source: std::str::Utf8Error,
+    },
+
+    #[error("docker container outputted non utf-8 bytes to stderr")]
+    InvalidBytesStdErr {
+        #[source]
+        source: std::str::Utf8Error,
+    },
 }
 
 pub struct RunOutput {
@@ -91,31 +129,24 @@ impl DockerSandbox {
         })
     }
 
-    pub async fn run_code<T>(&self, code_file: T, lang: Language) -> Result<String, Error>
+    pub async fn run_code<T>(&self, code_file: T, lang: Language) -> Result<RunOutput, Error>
     where
         T: AsRef<Path>,
     {
-        // get sandbox dir
         let sandbox_dir = get_sandbox_dir(&self.docker_dir);
-
-        // cleanup sandbox folder
-        clean_sandbox_dir(&sandbox_dir)?;
-
-        // create sandbox folder
         create_sandbox_dir(&sandbox_dir)?;
-
-        // copy code file to sandbox folder
         let sandbox_files = get_sandbox_files(code_file.as_ref(), lang, &sandbox_dir)?;
         let commands = get_commands(&sandbox_files, lang);
-        copy_code_file(code_file.as_ref(), &sandbox_files.source_file)?;
-        let container_id =
-            create_container(&self.docker, &self.docker_dir, &self.image_tag).await?;
-        exec_container(&self.docker, &container_id, &commands.run_cmd).await?;
-
-        // run code
-        // delete container
-        // cleanup sandbox folder
-        todo!()
+        copy_code_file(code_file.as_ref(), &sandbox_files.host_src)?;
+        let output = exec_container(
+            &self.docker,
+            &sandbox_dir,
+            &self.image_tag,
+            &commands.run_cmd,
+        )
+        .await?;
+        clean_sandbox_dir(&sandbox_dir)?;
+        Ok(output)
     }
 }
 
@@ -155,12 +186,16 @@ async fn build_image(docker: &Docker, path: &Path, tag: &str) -> Result<(), Erro
 
 async fn create_container(
     docker: &Docker,
-    docker_dir: &Path,
+    sandbox_dir: &Path,
     image_tag: &str,
+    cmd: &[String],
 ) -> Result<String, Error> {
-    let mount = format!("{}:/home/sanbox", docker_dir.display());
+    let mount = format!("{}:/home/sandbox", sandbox_dir.display());
+    let slice_cmd: Vec<&str> = cmd.iter().map(String::as_str).collect();
     let options = ContainerOptions::builder(image_tag)
         .volumes(vec![&mount])
+        .working_dir("/home/sandbox")
+        .cmd(slice_cmd)
         .build();
     docker.containers().create(&options).await.map_or_else(
         |err| {
@@ -175,18 +210,54 @@ async fn create_container(
 
 async fn exec_container(
     docker: &Docker,
-    container_id: &str,
+    sandbox_dir: &Path,
+    image_tag: &str,
     cmd: &[String],
 ) -> Result<RunOutput, Error> {
-    let cmd: Vec<&str> = cmd.iter().map(String::as_str).collect();
-    let options = ExecContainerOptions::builder()
-        .cmd(cmd)
-        .attach_stdout(true)
-        .attach_stderr(true)
-        .build();
+    let container_id = create_container(docker, sandbox_dir, image_tag, cmd).await?;
+    let container = docker.containers().get(&container_id);
 
-    docker.containers().get(container_id).exec(&options);
-    todo!()
+    let (mut read, _write) = container
+        .attach()
+        .await
+        .map_err(|err| Error::FailedToAtachToContainer {
+            container_id: container_id.to_owned(),
+            source: err,
+        })?
+        .split();
+
+    container
+        .start()
+        .await
+        .map_err(|err| Error::FailedToStartContainer {
+            container_id: container_id.to_owned(),
+            source: err,
+        })?;
+
+    let mut stdout: Vec<u8> = Vec::new();
+    let mut stderr: Vec<u8> = Vec::new();
+    while let Some(result) = read.next().await {
+        let chunk = result.map_err(|err| Error::FailedToExecute {
+            cmd: cmd.join(" "),
+            source: err,
+        })?;
+
+        match chunk {
+            StdOut(mut bytes) => stdout.append(&mut bytes),
+            StdErr(mut bytes) => stderr.append(&mut bytes),
+            StdIn(_) => (),
+        }
+    }
+
+    let stdout = from_utf8(&stdout)
+        .map_err(|err| Error::InvalidBytesStdOut { source: err })?
+        .to_owned();
+
+    let stderr = from_utf8(&stderr)
+        .map_err(|err| Error::InvalidBytesStdErr { source: err })?
+        .to_owned();
+
+    Ok(RunOutput { stdout, stderr })
 }
 
 struct Commands {
@@ -195,8 +266,9 @@ struct Commands {
 }
 
 struct SandboxFiles {
-    source_file: PathBuf,
-    compiled_file: PathBuf,
+    host_src: PathBuf,
+    container_src: PathBuf,
+    container_bin: PathBuf,
 }
 
 fn get_sandbox_dir(docker_dir: &Path) -> PathBuf {
@@ -260,30 +332,28 @@ fn get_sandbox_files(
         .ok_or_else(|| Error::InvalidCodeFile(code_file.to_path_buf()))?;
     let source_ext = get_source_extension(lang);
     let compiled_ext = get_compiled_extension(lang);
-    let source_file = sandbox_dir
-        .with_file_name(base_file_name)
-        .with_extension(source_ext);
-    let compiled_file = sandbox_dir
-        .with_file_name(base_file_name)
-        .with_extension(compiled_ext);
+    let host_src = sandbox_dir.join(base_file_name).with_extension(source_ext);
+    let container = Path::new("/home/sandbox");
+    let container_src = container.join(base_file_name).with_extension(source_ext);
+    let container_bin = container.join(base_file_name).with_extension(compiled_ext);
     Ok(SandboxFiles {
-        source_file,
-        compiled_file,
+        host_src,
+        container_src,
+        container_bin,
     })
 }
 
 fn get_commands(copied_file: &SandboxFiles, lang: Language) -> Commands {
     Commands {
-        build_cmd: get_build_cmd(&copied_file.source_file, lang),
-        run_cmd: get_run_cmd(&copied_file.compiled_file, lang),
+        build_cmd: get_build_cmd(&copied_file.host_src, lang),
+        run_cmd: get_run_cmd(&copied_file.container_src, lang),
     }
 }
 
 fn get_build_cmd(source_file: &Path, lang: Language) -> Vec<String> {
-    get_compiler(lang).map_or_else(
-        Vec::new,
-        |compiler| vec![compiler.to_owned(), source_file.display().to_string()],
-    )
+    get_compiler(lang).map_or_else(Vec::new, |compiler| {
+        vec![compiler.to_owned(), source_file.display().to_string()]
+    })
 }
 
 fn get_run_cmd(compiled_file: &Path, lang: Language) -> Vec<String> {
