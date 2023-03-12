@@ -15,6 +15,7 @@ pub struct DockerSandbox {
 #[derive(Clone, Copy)]
 pub enum Language {
     Python,
+    Java,
 }
 
 #[derive(Error, Debug)]
@@ -146,6 +147,15 @@ impl DockerSandbox {
         let sandbox_files = get_sandbox_files(code_file.as_ref(), lang, &sandbox_dir)?;
         let commands = get_commands(&sandbox_files, lang);
         copy_code_file(code_file.as_ref(), &sandbox_files.host_src)?;
+        if !&commands.build_cmd.is_empty() {
+            exec_container(
+                &self.docker,
+                &sandbox_dir,
+                &self.image_tag,
+                &commands.build_cmd,
+            )
+            .await?;
+        }
         let output = exec_container(
             &self.docker,
             &sandbox_dir,
@@ -303,24 +313,28 @@ fn get_sandbox_dir(docker_dir: &Path) -> PathBuf {
 fn get_source_extension(lang: Language) -> &'static str {
     match lang {
         Language::Python => "py",
+        Language::Java => "java",
     }
 }
 
 fn get_compiled_extension(lang: Language) -> &'static str {
     match lang {
         Language::Python => "py",
+        Language::Java => "",
     }
 }
 
 fn get_compiler(lang: Language) -> Option<&'static str> {
     match lang {
         Language::Python => None,
+        Language::Java => Some("javac"),
     }
 }
 
 fn get_runner(lang: Language) -> &'static str {
     match lang {
         Language::Python => "python",
+        Language::Java => "java",
     }
 }
 
@@ -352,15 +366,15 @@ fn get_sandbox_files(
     lang: Language,
     sandbox_dir: &Path,
 ) -> Result<SandboxFiles, Error> {
-    let base_file_name = code_file
+    let base_file_name: PathBuf = code_file
         .file_stem()
-        .ok_or_else(|| Error::InvalidCodeFile(code_file.to_path_buf()))?;
+        .ok_or_else(|| Error::InvalidCodeFile(code_file.to_path_buf()))?
+        .into();
     let source_ext = get_source_extension(lang);
     let compiled_ext = get_compiled_extension(lang);
-    let host_src = sandbox_dir.join(base_file_name).with_extension(source_ext);
-    let container = Path::new("/home/sandbox");
-    let container_src = container.join(base_file_name).with_extension(source_ext);
-    let container_bin = container.join(base_file_name).with_extension(compiled_ext);
+    let host_src = sandbox_dir.join(&base_file_name).with_extension(source_ext);
+    let container_src = base_file_name.with_extension(source_ext);
+    let container_bin = base_file_name.with_extension(compiled_ext);
     Ok(SandboxFiles {
         host_src,
         container_src,
@@ -368,10 +382,10 @@ fn get_sandbox_files(
     })
 }
 
-fn get_commands(copied_file: &SandboxFiles, lang: Language) -> Commands {
+fn get_commands(sandbox_files: &SandboxFiles, lang: Language) -> Commands {
     Commands {
-        build_cmd: get_build_cmd(&copied_file.host_src, lang),
-        run_cmd: get_run_cmd(&copied_file.container_src, lang),
+        build_cmd: get_build_cmd(&sandbox_files.container_src, lang),
+        run_cmd: get_run_cmd(&sandbox_files.container_bin, lang),
     }
 }
 

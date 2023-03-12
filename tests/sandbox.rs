@@ -12,3 +12,14 @@ async fn test_python_successful_run() -> Result<()> {
     assert!(&output.stderr.is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn test_java_successful_run() -> Result<()> {
+    let sandbox = DockerSandbox::new("./docker", "sandbox").await?;
+    let output = sandbox
+        .run_code("./example_code/Hello.java", Language::Java)
+        .await?;
+    assert_eq!("Hello World\n", &output.stdout);
+    assert!(&output.stderr.is_empty());
+    Ok(())
+}
