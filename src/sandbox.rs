@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use shiplift::tty::TtyChunk::{StdErr, StdIn, StdOut};
-use shiplift::{BuildOptions, ContainerOptions, Docker};
+use shiplift::{BuildOptions, Container, ContainerOptions, Docker, RmContainerOptions};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
 use std::{fs, vec};
@@ -33,33 +33,6 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("failed to build docker image")]
-    FailedToBuildImage(#[source] shiplift::Error),
-
-    #[error("failed to create docker container from image with tag '{image_tag:?}'")]
-    FailedToCreateContainer {
-        image_tag: String,
-
-        #[source]
-        source: shiplift::Error,
-    },
-
-    #[error("failed to attach to docker container with id {container_id:?}")]
-    FailedToAtachToContainer {
-        container_id: String,
-
-        #[source]
-        source: shiplift::Error,
-    },
-
-    #[error("failed to start docker container with id {container_id:?}")]
-    FailedToStartContainer {
-        container_id: String,
-
-        #[source]
-        source: shiplift::Error,
-    },
-
     #[error("failed to create directory at '{directory:?}'")]
     FailedToCreateDirectory {
         directory: PathBuf,
@@ -88,9 +61,44 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[error("failed to build docker image")]
+    FailedToBuildImage(#[source] shiplift::Error),
+
+    #[error("failed to create docker container from image with tag '{image_tag:?}'")]
+    FailedToCreateContainer {
+        image_tag: String,
+
+        #[source]
+        source: shiplift::Error,
+    },
+
+    #[error("failed to attach to docker container with id {container_id:?}")]
+    FailedToAtachToContainer {
+        container_id: String,
+
+        #[source]
+        source: shiplift::Error,
+    },
+
+    #[error("failed to start docker container with id {container_id:?}")]
+    FailedToStartContainer {
+        container_id: String,
+
+        #[source]
+        source: shiplift::Error,
+    },
+
     #[error("failed to execute '{cmd:?}' inside docker container")]
     FailedToExecute {
         cmd: String,
+
+        #[source]
+        source: shiplift::Error,
+    },
+
+    #[error("failed to remove docker container with id {container_id:?}")]
+    FailedToRemoveContainer {
+        container_id: String,
 
         #[source]
         source: shiplift::Error,
@@ -184,30 +192,6 @@ async fn build_image(docker: &Docker, path: &Path, tag: &str) -> Result<(), Erro
     Ok(())
 }
 
-async fn create_container(
-    docker: &Docker,
-    sandbox_dir: &Path,
-    image_tag: &str,
-    cmd: &[String],
-) -> Result<String, Error> {
-    let mount = format!("{}:/home/sandbox", sandbox_dir.display());
-    let slice_cmd: Vec<&str> = cmd.iter().map(String::as_str).collect();
-    let options = ContainerOptions::builder(image_tag)
-        .volumes(vec![&mount])
-        .working_dir("/home/sandbox")
-        .cmd(slice_cmd)
-        .build();
-    docker.containers().create(&options).await.map_or_else(
-        |err| {
-            Err(Error::FailedToCreateContainer {
-                image_tag: image_tag.to_owned(),
-                source: err,
-            })
-        },
-        |result| Ok(result.id),
-    )
-}
-
 async fn exec_container(
     docker: &Docker,
     sandbox_dir: &Path,
@@ -249,6 +233,8 @@ async fn exec_container(
         }
     }
 
+    remove_container(&container).await?;
+
     let stdout = from_utf8(&stdout)
         .map_err(|err| Error::InvalidBytesStdOut { source: err })?
         .to_owned();
@@ -258,6 +244,45 @@ async fn exec_container(
         .to_owned();
 
     Ok(RunOutput { stdout, stderr })
+}
+
+async fn create_container(
+    docker: &Docker,
+    sandbox_dir: &Path,
+    image_tag: &str,
+    cmd: &[String],
+) -> Result<String, Error> {
+    let mount = format!("{}:/home/sandbox", sandbox_dir.display());
+    let slice_cmd: Vec<&str> = cmd.iter().map(String::as_str).collect();
+    let options = ContainerOptions::builder(image_tag)
+        .volumes(vec![&mount])
+        .working_dir("/home/sandbox")
+        .cmd(slice_cmd)
+        .build();
+    docker.containers().create(&options).await.map_or_else(
+        |err| {
+            Err(Error::FailedToCreateContainer {
+                image_tag: image_tag.to_owned(),
+                source: err,
+            })
+        },
+        |result| Ok(result.id),
+    )
+}
+
+async fn remove_container(container: &Container<'_>) -> Result<(), Error> {
+    let options = RmContainerOptions::builder()
+        .volumes(true)
+        .force(true)
+        .build();
+    container
+        .remove(options)
+        .await
+        .map_err(|err| Error::FailedToRemoveContainer {
+            container_id: container.id().to_owned(),
+            source: err,
+        })?;
+    Ok(())
 }
 
 struct Commands {
