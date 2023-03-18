@@ -21,6 +21,9 @@
           clippy
           openssl
           pkg-config
+
+          python3
+          openjdk
         ];
       };
     });

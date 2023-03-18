@@ -1,3 +1,4 @@
+use futures::AsyncWriteExt;
 use futures::StreamExt;
 use shiplift::tty::TtyChunk::{StdErr, StdIn, StdOut};
 use shiplift::{BuildOptions, Container, ContainerOptions, Docker, RmContainerOptions};
@@ -20,9 +21,6 @@ pub enum Language {
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("path {0:?} does not point to an existing directory")]
-    InvalidDirectory(PathBuf),
-
     #[error("directory {0:?} does not contain a dockerfile named 'Dockerfile'")]
     MissingDockerfile(PathBuf),
 
@@ -92,6 +90,12 @@ pub enum Error {
         source: shiplift::Error,
     },
 
+    #[error("failed to write to stdin of container")]
+    WriteToStdin(#[source] std::io::Error),
+
+    #[error("failed to close the stdin of container")]
+    CloseStdin(#[source] std::io::Error),
+
     #[error("docker container outputted non utf-8 bytes to stdout")]
     InvalidBytesStdOut {
         #[source]
@@ -124,7 +128,12 @@ impl DockerSandbox {
         })
     }
 
-    pub async fn run_code<T>(&self, code_file: T, lang: Language) -> Result<RunOutput, Error>
+    pub async fn run_code<T>(
+        &self,
+        code_file: T,
+        lang: Language,
+        stdin: Option<&str>,
+    ) -> Result<RunOutput, Error>
     where
         T: AsRef<Path>,
     {
@@ -138,6 +147,7 @@ impl DockerSandbox {
                 temp_dir.as_ref(),
                 &self.image_tag,
                 &commands.build_cmd,
+                None,
             )
             .await?;
         }
@@ -146,6 +156,7 @@ impl DockerSandbox {
             temp_dir.as_ref(),
             &self.image_tag,
             &commands.run_cmd,
+            stdin,
         )
         .await?;
         Ok(output)
@@ -184,18 +195,10 @@ async fn exec_container(
     temp_dir: &Path,
     image_tag: &str,
     cmd: &[String],
+    stdin: Option<&str>,
 ) -> Result<RunOutput, Error> {
     let container_id = create_container(docker, temp_dir, image_tag, cmd).await?;
     let container = docker.containers().get(&container_id);
-
-    let (mut read, _write) = container
-        .attach()
-        .await
-        .map_err(|err| Error::FailedToAtachToContainer {
-            container_id: container_id.to_owned(),
-            source: err,
-        })?
-        .split();
 
     container
         .start()
@@ -205,9 +208,27 @@ async fn exec_container(
             source: err,
         })?;
 
+    let (mut reader, mut writer) = container
+        .attach()
+        .await
+        .map_err(|err| Error::FailedToAtachToContainer {
+            container_id: container_id.to_owned(),
+            source: err,
+        })?
+        .split();
+
+    if let Some(s) = stdin {
+        writer
+            .write_all(s.as_bytes())
+            .await
+            .map_err(Error::WriteToStdin)?;
+        writer.flush().await.map_err(Error::WriteToStdin)?;
+    }
+    //writer.close().await.map_err(Error::CloseStdin)?;
+
     let mut stdout: Vec<u8> = Vec::new();
     let mut stderr: Vec<u8> = Vec::new();
-    while let Some(result) = read.next().await {
+    while let Some(result) = reader.next().await {
         let chunk = result.map_err(|err| Error::FailedToExecute {
             cmd: cmd.join(" "),
             source: err,
@@ -244,6 +265,9 @@ async fn create_container(
     let options = ContainerOptions::builder(image_tag)
         .volumes(vec![&mount])
         .working_dir("/home/sandbox")
+        .attach_stdin(true)
+        .attach_stdout(true)
+        .attach_stderr(true)
         .cmd(slice_cmd)
         .build();
     docker.containers().create(&options).await.map_or_else(
