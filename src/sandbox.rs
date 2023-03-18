@@ -6,9 +6,12 @@ use shiplift::tty::TtyChunk::{StdErr, StdIn, StdOut};
 use shiplift::{BuildOptions, Container, ContainerOptions, Docker, RmContainerOptions};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
+use std::time::Duration;
 use std::{fs, vec};
 use tempdir::TempDir;
 use thiserror::Error;
+use tokio::time;
+use tokio::time::error::Elapsed;
 
 pub struct DockerSandbox {
     docker: Docker,
@@ -109,6 +112,14 @@ pub enum SandboxError {
         #[source]
         source: std::str::Utf8Error,
     },
+
+    #[error("code run did not complete in {duration:?}")]
+    Timeout {
+        duration: Duration,
+
+        #[source]
+        source: Elapsed,
+    },
 }
 
 pub struct RunOutput {
@@ -134,6 +145,7 @@ impl DockerSandbox {
         &self,
         code_file: T,
         lang: Language,
+        timeout: Duration,
         stdin: Option<&str>,
     ) -> Result<RunOutput, SandboxError>
     where
@@ -143,25 +155,33 @@ impl DockerSandbox {
         let sandbox_files = get_sandbox_files(code_file.as_ref(), lang, temp_dir.as_ref())?;
         let commands = get_commands(&sandbox_files, lang);
         copy_code_file(code_file.as_ref(), &sandbox_files.host_src)?;
-        if !&commands.build_cmd.is_empty() {
+        let exec = async {
+            if !&commands.build_cmd.is_empty() {
+                exec_container(
+                    &self.docker,
+                    temp_dir.as_ref(),
+                    &self.image_tag,
+                    &commands.build_cmd,
+                    None,
+                )
+                .await?;
+            }
             exec_container(
                 &self.docker,
                 temp_dir.as_ref(),
                 &self.image_tag,
-                &commands.build_cmd,
-                None,
+                &commands.run_cmd,
+                stdin,
             )
-            .await?;
-        }
-        let output = exec_container(
-            &self.docker,
-            temp_dir.as_ref(),
-            &self.image_tag,
-            &commands.run_cmd,
-            stdin,
-        )
-        .await?;
-        Ok(output)
+            .await
+        };
+
+        time::timeout(timeout, exec)
+            .await
+            .map_err(|err| SandboxError::Timeout {
+                duration: timeout,
+                source: err,
+            })?
     }
 }
 
@@ -208,7 +228,7 @@ async fn exec_container(
             container_id: container_id.to_owned(),
             source: err,
         })?
-    .split();
+        .split();
 
     container
         .start()
