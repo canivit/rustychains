@@ -1,5 +1,7 @@
 use futures::AsyncWriteExt;
 use futures::StreamExt;
+use futures::TryStreamExt;
+use shiplift::tty::TtyChunk;
 use shiplift::tty::TtyChunk::{StdErr, StdIn, StdOut};
 use shiplift::{BuildOptions, Container, ContainerOptions, Docker, RmContainerOptions};
 use std::path::{Path, PathBuf};
@@ -199,7 +201,6 @@ async fn exec_container(
 ) -> Result<RunOutput, SandboxError> {
     let container_id = create_container(docker, temp_dir, image_tag, cmd).await?;
     let container = docker.containers().get(&container_id);
-
     container
         .start()
         .await
@@ -208,7 +209,7 @@ async fn exec_container(
             source: err,
         })?;
 
-    let (mut reader, mut writer) = container
+    let (reader, mut writer) = container
         .attach()
         .await
         .map_err(|err| SandboxError::AtachToContainer {
@@ -224,24 +225,41 @@ async fn exec_container(
             .map_err(SandboxError::WriteToStdin)?;
         writer.flush().await.map_err(SandboxError::WriteToStdin)?;
     }
-    //writer.close().await.map_err(Error::CloseStdin)?;
 
-    let mut stdout: Vec<u8> = Vec::new();
-    let mut stderr: Vec<u8> = Vec::new();
-    while let Some(result) = reader.next().await {
-        let chunk = result.map_err(|err| SandboxError::Execute {
+    let chunks = reader
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(|err| SandboxError::Execute {
             cmd: cmd.join(" "),
             source: err,
         })?;
 
-        match chunk {
-            StdOut(mut bytes) => stdout.append(&mut bytes),
-            StdErr(mut bytes) => stderr.append(&mut bytes),
-            StdIn(_) => (),
-        }
-    }
-
     remove_container(&container).await?;
+    convert_chunks(&chunks)
+}
+
+fn convert_chunks(chunks: &[TtyChunk]) -> Result<RunOutput, SandboxError> {
+    let stdout = chunks
+        .iter()
+        .filter_map(|chunk| match chunk {
+            StdIn(_) => None,
+            StdOut(bytes) => Some(bytes),
+            StdErr(_) => None,
+        })
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+
+    let stderr = chunks
+        .iter()
+        .filter_map(|chunk| match chunk {
+            StdIn(_) => None,
+            StdOut(_) => None,
+            StdErr(bytes) => Some(bytes),
+        })
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
 
     let stdout = from_utf8(&stdout)
         .map_err(|err| SandboxError::InvalidBytesStdOut { source: err })?
