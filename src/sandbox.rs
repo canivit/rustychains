@@ -226,6 +226,14 @@ async fn exec_container(
         writer.flush().await.map_err(SandboxError::WriteToStdin)?;
     }
 
+    container
+        .wait()
+        .await
+        .map_err(|err| SandboxError::Execute {
+            cmd: cmd.join(" "),
+            source: err,
+        })?;
+
     let chunks = reader
         .try_collect::<Vec<_>>()
         .await
