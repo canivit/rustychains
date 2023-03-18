@@ -201,14 +201,6 @@ async fn exec_container(
 ) -> Result<RunOutput, SandboxError> {
     let container_id = create_container(docker, temp_dir, image_tag, cmd).await?;
     let container = docker.containers().get(&container_id);
-    container
-        .start()
-        .await
-        .map_err(|err| SandboxError::StartContainer {
-            container_id: container_id.to_owned(),
-            source: err,
-        })?;
-
     let (reader, mut writer) = container
         .attach()
         .await
@@ -216,7 +208,15 @@ async fn exec_container(
             container_id: container_id.to_owned(),
             source: err,
         })?
-        .split();
+    .split();
+
+    container
+        .start()
+        .await
+        .map_err(|err| SandboxError::StartContainer {
+            container_id: container_id.to_owned(),
+            source: err,
+        })?;
 
     if let Some(s) = stdin {
         writer
