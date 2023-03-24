@@ -86,6 +86,22 @@ async fn test_python_sum() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_javascript_sum() -> Result<()> {
+    let sandbox = DockerSandbox::new("./docker", "sandbox").await?;
+    let output = sandbox
+        .run_code(
+            "./example_code/sum.js",
+            Language::JavaScript,
+            Duration::from_secs(3),
+            Some("3\n5\n8\n"),
+        )
+        .await?;
+    assert_eq!("16\n", &output.stdout);
+    assert!(&output.stderr.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_java_sum() -> Result<()> {
     let sandbox = DockerSandbox::new("./docker", "sandbox").await?;
     let output = sandbox

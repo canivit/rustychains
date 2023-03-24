@@ -21,6 +21,7 @@ pub struct DockerSandbox {
 #[derive(Clone, Copy)]
 pub enum Language {
     Python,
+    JavaScript,
     Java,
 }
 
@@ -356,6 +357,7 @@ struct SandboxFiles {
 fn get_source_extension(lang: Language) -> &'static str {
     match lang {
         Language::Python => "py",
+        Language::JavaScript => "js",
         Language::Java => "java",
     }
 }
@@ -363,6 +365,7 @@ fn get_source_extension(lang: Language) -> &'static str {
 fn get_compiled_extension(lang: Language) -> &'static str {
     match lang {
         Language::Python => "py",
+        Language::JavaScript => "js",
         Language::Java => "",
     }
 }
@@ -370,6 +373,7 @@ fn get_compiled_extension(lang: Language) -> &'static str {
 fn get_compiler(lang: Language) -> Option<&'static str> {
     match lang {
         Language::Python => None,
+        Language::JavaScript => None,
         Language::Java => Some("javac"),
     }
 }
@@ -377,6 +381,7 @@ fn get_compiler(lang: Language) -> Option<&'static str> {
 fn get_runner(lang: Language) -> &'static str {
     match lang {
         Language::Python => "python",
+        Language::JavaScript => "node",
         Language::Java => "java",
     }
 }

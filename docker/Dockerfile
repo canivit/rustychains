@@ -6,5 +6,8 @@ RUN nix-channel --update
 # Python
 RUN nix-env -iA nixpkgs.python3
 
+# Python
+RUN nix-env -iA nixpkgs.nodejs
+
 # Java
 RUN nix-env -iA nixpkgs.openjdk

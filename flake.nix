@@ -23,6 +23,7 @@
           pkg-config
 
           python3
+          nodejs
           openjdk
         ];
       };
