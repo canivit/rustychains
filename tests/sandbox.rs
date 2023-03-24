@@ -130,3 +130,33 @@ async fn test_python_timeout() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_java_timeout() -> Result<()> {
+    let sandbox = DockerSandbox::new("./docker", "sandbox").await?;
+
+    let result = sandbox
+        .run_code(
+            "./example_code/SlowEcho.java",
+            Language::Java,
+            Duration::from_secs(3),
+            Some("Hello\n"),
+        )
+        .await;
+    assert!(match result {
+        Ok(_) => false,
+        Err(err) => matches!(err, SandboxError::Timeout { .. }),
+    });
+
+    let output = sandbox
+        .run_code(
+            "./example_code/SlowEcho.java",
+            Language::Java,
+            Duration::from_secs(6),
+            Some("Hello\n"),
+        )
+        .await?;
+    assert_eq!("Hello\n", output.stdout);
+
+    Ok(())
+}
