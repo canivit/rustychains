@@ -315,6 +315,7 @@ async fn create_container(
         .attach_stdin(true)
         .attach_stdout(true)
         .attach_stderr(true)
+        .tty(false)
         .cmd(slice_cmd)
         .build();
     docker.containers().create(&options).await.map_or_else(
