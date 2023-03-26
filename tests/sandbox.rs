@@ -34,7 +34,7 @@ async fn test_chain() -> Result<()> {
             "./example_code/move_point.js",
             Language::JavaScript,
             Duration::from_secs(3),
-            Some(&format!("{point}\n")),
+            Some(&point),
         )
         .await?
         .stdout;
@@ -44,7 +44,7 @@ async fn test_chain() -> Result<()> {
             "./example_code/move_point.py",
             Language::Python,
             Duration::from_secs(3),
-            Some(&format!("{point}\n")),
+            Some(&point),
         )
         .await?
         .stdout;
@@ -54,7 +54,7 @@ async fn test_chain() -> Result<()> {
             "./example_code/move_point.js",
             Language::JavaScript,
             Duration::from_secs(3),
-            Some(&format!("{point}\n")),
+            Some(&point),
         )
         .await?
         .stdout;
