@@ -110,8 +110,17 @@ impl Workflow {
     }
 
     pub async fn execute(&self) -> Result<WorkflowResult, WorkflowError> {
+        let step_results = self.execute_steps().await?;
+        let export_results = self.execute_exports().await?;
+        Ok(WorkflowResult {
+            step_results,
+            export_results,
+        })
+    }
+
+    async fn execute_steps(&self) -> Result<Vec<StepResult>, WorkflowError> {
         let mut step_results = Vec::<StepResult>::new();
-        for (idx, step) in self.steps.iter().enumerate() {
+        for (idx, step) in self.steps().enumerate() {
             let input = step_results
                 .last()
                 .map_or(&self.input, |last_result| &last_result.stdout);
@@ -125,10 +134,11 @@ impl Workflow {
                 }
             };
         }
-        Ok(WorkflowResult {
-            step_results,
-            export_results: Vec::new(),
-        })
+        Ok(step_results)
+    }
+
+    async fn execute_exports(&self) -> Result<Vec<ExportResult>, WorkflowError> {
+        Ok(Vec::new())
     }
 }
 
@@ -179,5 +189,24 @@ impl WorkflowBuilder {
             steps: self.steps,
             exports: self.exports,
         })
+    }
+}
+
+impl WorkflowResult {
+    pub fn step_results(&self) -> impl Iterator<Item = &StepResult> {
+        self.step_results.iter()
+    }
+
+    pub fn export_results(&self) -> impl Iterator<Item = &ExportResult> {
+        self.export_results.iter()
+    }
+
+    pub fn exec_time(&self) -> Duration {
+        let step_time = self.step_results().map(|sr| sr.exec_time).sum::<Duration>();
+        let export_time = self
+            .export_results()
+            .map(|er| er.exec_time)
+            .sum::<Duration>();
+        step_time + export_time
     }
 }
