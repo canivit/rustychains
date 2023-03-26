@@ -9,7 +9,7 @@ use crate::sandbox::{DockerSandbox, SandboxError};
 
 pub struct Workflow {
     sandbox: DockerSandbox,
-    input: String,
+    input: Option<String>,
     steps: Vec<Step>,
     exports: Vec<Export>,
 }
@@ -38,7 +38,7 @@ pub enum Export {
 pub struct WorkflowBuilder {
     directory: PathBuf,
     image_tag: String,
-    input: String,
+    input: Option<String>,
     steps: Vec<Step>,
     exports: Vec<Export>,
 }
@@ -91,14 +91,14 @@ impl Workflow {
         WorkflowBuilder {
             directory: directory.as_ref().to_owned(),
             image_tag: image_tag.to_owned(),
-            input: "".to_owned(),
+            input: None,
             steps: Vec::new(),
             exports: Vec::new(),
         }
     }
 
-    pub fn input(&self) -> &str {
-        &self.input
+    pub fn input(&self) -> Option<&str> {
+        self.input.as_deref()
     }
 
     pub fn steps(&self) -> impl Iterator<Item = &Step> {
@@ -123,7 +123,7 @@ impl Workflow {
         for (idx, step) in self.steps().enumerate() {
             let input = step_results
                 .last()
-                .map_or(&self.input, |last_result| &last_result.stdout);
+                .map_or(self.input(), |last_result| Some(&last_result.stdout));
             match step.execute(input, idx, &self.sandbox).await {
                 Ok(r) => step_results.push(r),
                 Err(err) => {
@@ -145,13 +145,13 @@ impl Workflow {
 impl Step {
     async fn execute(
         &self,
-        input: &str,
+        input: Option<&str>,
         step_idx: usize,
         sandbox: &DockerSandbox,
     ) -> Result<StepResult, SandboxError> {
         let start = Instant::now();
         let output = sandbox
-            .run_code(&self.code_file, self.lang, self.timeout, Some(input))
+            .run_code(&self.code_file, self.lang, self.timeout, input)
             .await?;
         let exec_time = start.elapsed();
         Ok(StepResult {
@@ -164,8 +164,8 @@ impl Step {
 }
 
 impl WorkflowBuilder {
-    pub fn input(&mut self, value: &str) -> &mut Self {
-        self.input = value.to_owned();
+    pub fn input(&mut self, value: Option<&str>) -> &mut Self {
+        self.input = value.map(|i| i.to_owned());
         self
     }
 
