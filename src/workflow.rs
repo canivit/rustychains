@@ -67,7 +67,7 @@ pub enum WorkflowError {
     #[error("failed to init docker sandbox")]
     SandboxInit(#[source] SandboxError),
 
-    #[error("failed to execute step")]
+    #[error("failed to execute step at index {}", .prev_steps_results.len())]
     StepError {
         #[source]
         source: SandboxError,
@@ -143,6 +143,18 @@ impl Workflow {
 }
 
 impl Step {
+    pub fn new<T>(lang: Language, code_file: T, timeout: Duration, desc: &str) -> Self
+    where
+        T: AsRef<Path>,
+    {
+        Self {
+            lang,
+            code_file: code_file.as_ref().to_owned(),
+            timeout,
+            desc: desc.to_owned(),
+        }
+    }
+
     async fn execute(
         &self,
         input: Option<&str>,
@@ -164,18 +176,18 @@ impl Step {
 }
 
 impl WorkflowBuilder {
-    pub fn input(&mut self, value: Option<&str>) -> &mut Self {
+    pub fn input(mut self, value: Option<&str>) -> Self {
         self.input = value.map(|i| i.to_owned());
         self
     }
 
-    pub fn add_step(&mut self, step: &Step) -> &mut Self {
-        self.steps.push(step.clone());
+    pub fn add_step(mut self, step: Step) -> Self {
+        self.steps.push(step);
         self
     }
 
-    pub fn add_export(&mut self, export: &Export) -> &mut Self {
-        self.exports.push(export.clone());
+    pub fn add_export(mut self, export: Export) -> Self {
+        self.exports.push(export);
         self
     }
 
@@ -208,5 +220,9 @@ impl WorkflowResult {
             .map(|er| er.exec_time)
             .sum::<Duration>();
         step_time + export_time
+    }
+
+    pub fn output(&self) -> Option<&str> {
+        self.step_results.last().map(|r| r.stdout.as_str())
     }
 }
